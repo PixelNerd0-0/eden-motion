@@ -1,0 +1,58 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:   # run manually from the Actions tab
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+
+    steps:
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+                      /usr/share/swift /opt/hostedtoolcache/CodeQL || true
+          df -h
+
+      - name: Check out code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install host tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build glslang-tools
+
+      - name: Build APK
+        working-directory: src/android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon --stacktrace
+
+      - name: Sign any unsigned APKs with a throwaway key
+        run: |
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          keytool -genkeypair -keystore ci.keystore -alias ci -keyalg RSA \
+            -keysize 2048 -validity 10000 -storepass android -keypass android \
+            -dname "CN=CI"
+          find src/android/app/build/outputs/apk -name "*-unsigned.apk" | while read f; do
+            "$BT/apksigner" sign --ks ci.keystore --ks-pass pass:android \
+              --out "${f%-unsigned.apk}-signed.apk" "$f"
+          done
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: eden-android-apk
+          path: src/android/app/build/outputs/apk/**/*.apk
+          if-no-files-found: error
+          
